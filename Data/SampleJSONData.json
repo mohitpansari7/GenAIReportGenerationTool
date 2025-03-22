@@ -1,0 +1,39 @@
+{
+    "BudgetAnnouncements": {
+      "10%SORGrants": {
+        "TargetDate": "31.03.2025",
+        "CurrentStatus": "70% Basic Grants released, Performance Grants: Nil",
+        "Achievement": "100% (Basic Grants)"
+      }
+    },
+    "InfrastructureProjects": {
+      "RoadConstruction": {
+        "Location": "Dora village to Ambam",
+        "TargetCompletion": "31.03.2025",
+        "CurrentStatus": "50% of total project received",
+        "Progress": "50%"
+      }
+    },
+    "GovernmentPrograms": {
+      "RashtriyaGramSwarajAbhiyan": {
+        "CapacityBuilding": {
+          "Participants": 409,
+          "TrainingStatus": "Ongoing",
+          "AllocatedFunds": "Rs. 1.73 Cr"
+        }
+      }
+    },
+    "EEnablement": {
+      "EOfficeImplementation": {
+        "Coverage": "Statewide",
+        "CurrentStatus": "Implemented at Directorate Level",
+        "Progress": "80%"
+      }
+    },
+    "PublicGrievances": {
+      "Received": 2,
+      "Resolved": 2,
+      "ResolutionRate": "100%"
+    }
+  }
+  
