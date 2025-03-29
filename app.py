@@ -11,12 +11,13 @@ import matplotlib.dates as mdates
 from matplotlib.ticker import FuncFormatter
 import matplotlib.gridspec as gridspec
 from datetime import datetime
+import re
 
 # Constants
 OLLAMA_MODEL = "llama3.1"
 DATA_FOLDER = "Data"
 REPORTS_FOLDER = "reports"
-REPORT_FILENAME = "Comprehensive_Departmental_Report.pdf"
+REPORT_FILENAME = f"Comprehensive_Departmental_Report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf"
 
 # Ensure reports directory exists
 os.makedirs(REPORTS_FOLDER, exist_ok=True)
@@ -596,51 +597,114 @@ class PDF(FPDF):
             self.ln(5)
     
     def add_table(self, headers, data, width_ratio=None):
-        # Calculate widths based on table content
-        if width_ratio is None:
-            col_count = len(headers)
-            col_width = 180 / col_count
-            width_ratio = [1] * col_count
-        else:
-            # Normalize width_ratio
+        """
+        Add a table to the PDF
+        
+        Args:
+            headers (list): List of header texts
+            data (list): List of rows, where each row is a list of cell values
+            width_ratio (list, optional): List of width ratios for each column. Defaults to None.
+        """
+        num_columns = len(headers)
+        
+        # Normalize width_ratio if provided
+        if width_ratio:
             total = sum(width_ratio)
             width_ratio = [w/total for w in width_ratio]
+        else:
+            width_ratio = [1/num_columns] * num_columns
         
         # Calculate column widths
-        col_widths = [w * 180 for w in width_ratio]
+        total_width = self.epw - 2  # Effective page width minus margins
+        col_widths = [total_width * ratio for ratio in width_ratio]
         
-        # Set font for header
-        self.set_font("Helvetica", "B", 10)
-        self.set_fill_color(200, 220, 255)
+        # Set line height
+        line_height = self.font_size * 1.5
         
         # Add headers
+        self.set_font(self.font_family, 'B', self.font_size)
         for i, header in enumerate(headers):
-            self.cell(col_widths[i], 7, header, border=1, new_x=XPos.RIGHT, new_y=YPos.TOP, align="C", fill=True)
-        self.ln()
+            self.cell(
+                col_widths[i], 
+                line_height, 
+                str(header).encode('latin-1', 'replace').decode('latin-1'), 
+                border=1, 
+                new_x="RIGHT", 
+                new_y="TOP", 
+                align='C', 
+                fill=True
+            )
+        self.ln(line_height)
         
-        # Set font for data
-        self.set_font("Helvetica", "", 9)
-        self.set_fill_color(255, 255, 255)
-        
-        # Add data
-        fill = False
+        # Add data rows
+        self.set_font(self.font_family, '', self.font_size)
         for row in data:
-            for i, cell in enumerate(row):
-                # Convert any non-string values to strings
-                if not isinstance(cell, str):
-                    cell = str(cell)
-                
-                # Handle potential encoding issues by removing non-ASCII characters
+            max_lines = 1
+            # First pass: determine max number of lines needed for this row
+            for i, cell_value in enumerate(row):
                 try:
-                    self.cell(col_widths[i], 6, cell, border=1, new_x=XPos.RIGHT, new_y=YPos.TOP, align="C", fill=fill)
-                except Exception as e:
+                    # Convert to string and sanitize
+                    if not isinstance(cell_value, str):
+                        cell_value = str(cell_value)
+                    
                     # Remove or replace problematic characters
-                    safe_cell = ''.join(c for c in cell if ord(c) < 128)
-                    self.cell(col_widths[i], 6, safe_cell, border=1, new_x=XPos.RIGHT, new_y=YPos.TOP, align="C", fill=fill)
+                    cell_value = re.sub(r'[^\x00-\x7F]+', '', cell_value)
+                    
+                    # Calculate how many lines this cell will need
+                    cell_lines = len(self.multi_cell(
+                        col_widths[i], 
+                        line_height, 
+                        cell_value, 
+                        border=0, 
+                        align='L', 
+                        split_only=True
+                    ))
+                    max_lines = max(max_lines, cell_lines)
+                except Exception as e:
+                    # If there's an error, replace with a safe value
+                    row[i] = "[Error]"
+                    print(f"Error processing cell value: {e}")
             
-            self.ln()
-            fill = not fill
-        self.ln(5)
+            # Store current position
+            x_pos = self.get_x()
+            y_pos = self.get_y()
+            
+            # Second pass: actually render the cells with the calculated height
+            for i, cell_value in enumerate(row):
+                try:
+                    # Convert to string and sanitize again
+                    if not isinstance(cell_value, str):
+                        cell_value = str(cell_value)
+                    
+                    # Remove or replace problematic characters
+                    safe_value = re.sub(r'[^\x00-\x7F]+', '', cell_value)
+                    
+                    # Set position for this cell
+                    self.set_xy(x_pos, y_pos)
+                    
+                    # Draw the cell
+                    self.multi_cell(
+                        col_widths[i], 
+                        line_height, 
+                        safe_value, 
+                        border=1, 
+                        align='L'
+                    )
+                    
+                    # Move to the right of the current cell
+                    x_pos += col_widths[i]
+                except Exception as e:
+                    # If there's an error, replace with a safe value
+                    self.set_xy(x_pos, y_pos)
+                    self.multi_cell(col_widths[i], line_height, "[Error]", border=1, align='L')
+                    x_pos += col_widths[i]
+                    print(f"Error rendering cell: {e}")
+            
+            # Move to the next line
+            self.set_xy(self.l_margin, y_pos + line_height * max_lines)
+        
+        # Add some space after the table
+        self.ln(line_height)
 
 # Create PDF report
 pdf = PDF()
@@ -648,13 +712,124 @@ pdf.set_auto_page_break(auto=True, margin=15)
 pdf.add_page()
 pdf.alias_nb_pages()
 
-# Split the generated report into sections
-sections = generated_report.split('\n\n')
-executive_summary = sections[0] if len(sections) > 0 else generated_report
+# Process the AI-generated report to extract structured content
+def extract_report_sections(report_text):
+    # Try to identify sections based on common patterns
+    sections = {}
+    
+    # First, try to extract the executive summary (often comes first)
+    executive_summary = ""
+    
+    # Check for "Executive Summary" section header
+    if "# Executive Summary" in report_text or "## Executive Summary" in report_text or "Executive Summary" in report_text:
+        # Find where executive summary starts
+        for pattern in ["# Executive Summary", "## Executive Summary", "Executive Summary"]:
+            if pattern in report_text:
+                start_idx = report_text.find(pattern) + len(pattern)
+                # Find where the next section begins
+                next_section_patterns = ["# ", "## ", "\n\n"]
+                end_indices = [report_text.find(pat, start_idx) for pat in next_section_patterns if report_text.find(pat, start_idx) > 0]
+                end_idx = min(end_indices) if end_indices else len(report_text)
+                executive_summary = report_text[start_idx:end_idx].strip()
+                break
+    
+    # If no executive summary found with headers, try to use the first paragraph
+    if not executive_summary:
+        paragraphs = report_text.split('\n\n')
+        if paragraphs:
+            executive_summary = paragraphs[0].strip()
+    
+    sections["executive_summary"] = executive_summary
+    
+    # Extract the full report for the detailed section
+    detailed_report = report_text
+    sections["detailed_report"] = detailed_report
+    
+    return sections
+
+# Process the generated report
+report_sections = extract_report_sections(generated_report)
+executive_summary = report_sections["executive_summary"]
+
+# Check if executive summary is empty or too short
+if not executive_summary or len(executive_summary.strip()) < 50:
+    # Use LLM to generate a proper executive summary based on detailed content
+    
+    # Prepare additional context from available structured data
+    data_context = ""
+    if has_additional_data:
+        # Add key metrics as context for the LLM
+        try:
+            # Budget metrics
+            total_budget = sectoral_df['Budget_Allocation'].sum()
+            utilized_budget = sectoral_df['Budget_Utilization'].sum()
+            utilization_percentage = (utilized_budget / total_budget * 100) if total_budget > 0 else 0
+            
+            # Project metrics
+            total_projects = int(sectoral_df['Projects_Count'].sum())
+            completed_projects = int(time_series_df['ProjectsCompleted'].sum())
+            avg_implementation = sectoral_df['Implementation_Percentage'].mean()
+            
+            # Performance metrics
+            top_sector = sectoral_df.loc[sectoral_df['Implementation_Percentage'].idxmax(), 'Sector']
+            total_grievances = time_series_df.loc[time_series_df['Month'] == 'Total', 'Grievances_Received'].values[0]
+            resolved_grievances = time_series_df.loc[time_series_df['Month'] == 'Total', 'Grievances_Resolved'].values[0]
+            
+            data_context = f"""
+            Key Metrics:
+            - Budget: Total allocation Rs. {total_budget:.2f} Cr, Utilization Rs. {utilized_budget:.2f} Cr ({utilization_percentage:.1f}%)
+            - Projects: Total {total_projects}, Completed {completed_projects}, Average implementation {avg_implementation:.1f}%
+            - Top performing sector: {top_sector}
+            - Grievances: Received {int(total_grievances)}, Resolved {int(resolved_grievances)} ({(resolved_grievances/total_grievances*100):.1f}% resolution rate)
+            """
+        except Exception as e:
+            print(f"Error preparing metrics for executive summary: {e}")
+    
+    summary_prompt = f"""
+    Generate a concise executive summary for a government department's performance report.
+    The summary should highlight key achievements, challenges, budget utilization, project status, and future focus areas.
+    Keep it professional, data-driven, and suitable for an official report. Length should be around 150-200 words.
+    
+    Report Content:
+    {report_sections["detailed_report"]}
+    
+    {data_context}
+    
+    Additional Data:
+    {json.dumps(json_data, indent=2) if 'json_data' in locals() and len(json.dumps(json_data)) < 500 else 'JSON data available'}
+    
+    Tabular Data Sample:
+    {structured_data[:500] if 'structured_data' in locals() else ''}
+    
+    IMPORTANT: Don't mention "this report" or refer to the above context directly. Write as if you are summarizing the department's performance for the period.
+    """
+    
+    # Generate a tailored executive summary using LLM
+    summary_response = ollama.chat(model=OLLAMA_MODEL, messages=[  
+        {"role": "system", "content": "You are an expert government report writer specializing in executive summaries. Create professional, concise summaries that highlight key metrics, achievements, challenges, and strategic directions without repeating the phrase 'this report'."},  
+        {"role": "user", "content": summary_prompt}  
+    ])
+    
+    if hasattr(summary_response, "message") and hasattr(summary_response.message, "content"):
+        executive_summary = summary_response.message.content.strip()
+    else:
+        # Minimal fallback if LLM fails to generate summary
+        executive_summary = "This report provides an overview of recent activities, performance metrics, budget utilization, and future plans. See detailed sections for comprehensive information."
 
 # Add Executive Summary
 pdf.chapter_title("Executive Summary")
 pdf.chapter_body(executive_summary)
+
+# For the detailed report section, use the full AI generated content
+detailed_report = report_sections["detailed_report"]
+
+# Add the AI generated content
+pdf.chapter_title("Detailed Analysis")
+pdf.chapter_body(detailed_report)
+
+if has_additional_data:
+    # Add a key metrics section
+    pdf.chapter_title("Key Performance Metrics")
 
 # Add Budget performance section
 pdf.add_page()
@@ -770,11 +945,6 @@ if has_additional_data:
     data = [[str(int(total_received)), str(int(total_resolved)), f"{resolution_rate:.1f}%", "5 days"]]
     
     pdf.add_table(headers, data)
-
-# Add the rest of the report
-pdf.add_page()
-pdf.chapter_title("Detailed Report")
-pdf.chapter_body("\n\n".join(sections[1:] if len(sections) > 1 else []))
 
 # Save the PDF
 output_pdf_path = os.path.join(REPORTS_FOLDER, REPORT_FILENAME)
